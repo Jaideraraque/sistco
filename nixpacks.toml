@@ -3,3 +3,5 @@ aptPkgs = ["php8.3-bcmath", "php8.3-mysql", "php8.3-mbstring"]
  
 [phases.install] 
 cmds = ["composer install --optimize-autoloader --no-scripts --no-interaction --ignore-platform-req=ext-bcmath"]
+[providers] 
+= ["php"]
