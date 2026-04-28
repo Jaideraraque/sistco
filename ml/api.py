@@ -211,7 +211,7 @@ def obtener_datos_bd():
                 ORDER BY total DESC
             """)
             mora_municipio = '\n'.join([
-                f"  - {r['municipio']}: {r['total']} clientes, {r['en_mora']} en mora"
+                f"  - {r['municipio']}: {r['total']} clientes, {r.get('en_mora', 0)} en mora"
                 for r in cursor.fetchall()
             ])
 
@@ -286,7 +286,7 @@ def obtener_datos_bd():
                 ORDER BY municipio, total DESC
             """)
             clientes_vereda = '\n'.join([
-                f"  - {r['vereda']} ({r['municipio']}): {r['total']} clientes, {r['en_mora']} en mora, mora prom {r['mora_prom']}%, riesgo alto {r['riesgo_alto']}"
+                f"  - {r['vereda']} ({r['municipio']}): {r['total']} clientes, {r.get('en_mora', 0)} en mora, mora prom {r['mora_prom']}%, riesgo alto {r['riesgo_alto']}"
                 for r in cursor.fetchall()
             ])
 
@@ -315,7 +315,7 @@ def obtener_datos_bd():
                 ORDER BY municipio, vereda
             """)
             estado_pago_vereda = '\n'.join([
-                f"  - {r['vereda']} ({r['municipio']}): {r['al_dia']} al día, {r['en_mora']} en mora de {r['total']} total"
+                f"  - {r['vereda']} ({r['municipio']}): {r['al_dia']} al día, {r.get('en_mora', 0)} en mora de {r['total']} total"
                 for r in cursor.fetchall()
             ])
 
@@ -330,7 +330,7 @@ def obtener_datos_bd():
                 LIMIT 5
             """)
             clientes_mas_antiguos = '\n'.join([
-                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): {int(r['antiguedad'])} meses, plan {r['megas']}, ${int(r['mensualidad']):,} COP, {'en mora' if r['en_mora'] else 'al día'}"
+                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): {int(r['antiguedad'])} meses, plan {r['megas']}, ${int(r['mensualidad']):,} COP, {'en mora' if r.get('es_moroso', 0) else 'al día'}"
                 for r in cursor.fetchall()
             ])
 
@@ -377,7 +377,7 @@ def obtener_datos_bd():
                 ORDER BY valor ASC
             """)
             plan_mensualidad = '\n'.join([
-                f"  - ${int(r['valor']):,} COP — plan {r['megas']}: {r['total']} clientes, {r['en_mora']} en mora"
+                f"  - ${int(r['valor']):,} COP — plan {r['megas']}: {r['total']} clientes, {r.get('en_mora', 0)} en mora"
                 for r in cursor.fetchall()
             ])
 
@@ -392,7 +392,7 @@ def obtener_datos_bd():
                 ORDER BY municipio, vereda, mensualidad DESC
             """)
             corporativos_por_vereda = '\n'.join([
-                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): plan {r['megas']}, ${int(r['mensualidad']):,} COP, {int(r['antiguedad'])} meses, {'en mora' if r['en_mora'] else 'al día'}"
+                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): plan {r['megas']}, ${int(r['mensualidad']):,} COP, {int(r['antiguedad'])} meses, {'en mora' if r.get('es_moroso', 0) else 'al día'}"
                 for r in cursor.fetchall()
             ])
 
