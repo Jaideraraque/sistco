@@ -1,6 +1,8 @@
 FROM ubuntu:22.04 
 ENV DEBIAN_FRONTEND=noninteractive 
-RUN apt-get update && apt-get install -y php8.3 php8.3-cli php8.3-mysql php8.3-bcmath php8.3-zip php8.3-mbstring php8.3-xml php8.3-curl php8.3-dom unzip curl git nodejs npm apache2 libapache2-mod-php8.3 
+RUN apt-get update && apt-get install -y software-properties-common curl git unzip nodejs npm 
+RUN add-apt-repository ppa:ondrej/php -y 
+RUN apt-get update && apt-get install -y php8.3 php8.3-cli php8.3-mysql php8.3-bcmath php8.3-zip php8.3-mbstring php8.3-xml php8.3-curl apache2 libapache2-mod-php8.3 
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer 
 RUN a2enmod rewrite 
 WORKDIR /var/www/html 
