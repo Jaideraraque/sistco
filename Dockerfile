@@ -1,5 +1,13 @@
-FROM serversideup/php:8.3-fpm-nginx 
+FROM ubuntu:22.04 
+ENV DEBIAN_FRONTEND=noninteractive 
+RUN apt-get update && apt-get install -y php8.3 php8.3-cli php8.3-mysql php8.3-bcmath php8.3-zip php8.3-mbstring php8.3-xml php8.3-curl php8.3-dom unzip curl git nodejs npm apache2 libapache2-mod-php8.3 
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer 
+RUN a2enmod rewrite 
 WORKDIR /var/www/html 
-COPY --chown=www-data:www-data . . 
-RUN composer install --optimize-autoloader --no-scripts --no-interaction --ignore-platform-req=ext-bcmath 
-RUN npm ci && npm run build
+COPY . . 
+RUN composer install --optimize-autoloader --no-scripts --no-interaction 
+RUN npm ci && npm run build 
+RUN chown -R www-data:www-data /var/www/html 
+RUN sed -i "s!/var/www/html!/var/www/html/public!g" /etc/apache2/sites-available/000-default.conf 
+EXPOSE 80 
+CMD ["apache2ctl", "-D", "FOREGROUND"] 
