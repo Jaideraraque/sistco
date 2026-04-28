@@ -517,6 +517,14 @@ def health():
         "mejoras": ["MySQL tiempo real", "Historial conversación", "Contexto de sesión"]
     }
 
+@app.get("/debug")
+def debug():
+    bd = obtener_datos_bd()
+    return {
+        "tiene_veredas": "clientes_vereda" in bd,
+        "muestra_vereda": bd.get("clientes_vereda", "NO EXISTE")[:200] if "clientes_vereda" in bd else "NO EXISTE"
+    }
+
 @app.post("/clasificar/cliente")
 def clasificar_cliente(datos: DatosCliente):
     try:
