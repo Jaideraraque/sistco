@@ -16,13 +16,10 @@ import shutil
 
 warnings.filterwarnings('ignore')
 
-# ── Groq client (desde variable de entorno) ──
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY no está configurada en variables de entorno")
-groq_client = Groq(api_key=GROQ_API_KEY)
+# ── Groq client ──
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# ── Configuración MySQL (desde variables de entorno) ──
+# ── Configuración MySQL ──
 DB_CONFIG = {
     "host":        os.environ.get("DB_HOST", "127.0.0.1"),
     "port":        int(os.environ.get("DB_PORT", 3306)),
@@ -59,7 +56,6 @@ modelo_ingresos      = joblib.load(os.path.join(BASE, 'modelos', 'modelo_ingreso
 print("✅ modelo_mora.pkl         — Clasificación de clientes")
 print("✅ modelo_segmentacion.pkl — Segmentación de clientes")
 print("✅ modelo_ingresos.pkl     — Proyección de ingresos")
-print(f"🔗 Conectado a DB: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
 print("🚀 API lista en http://localhost:8000")
 
 # ── Schemas ──
@@ -122,7 +118,6 @@ def obtener_datos_bd():
             cursor.execute("SELECT ROUND(AVG(antiguedad_meses),1) as antig FROM clientes")
             antig_prom = cursor.fetchone()['antig'] or 0
 
-            # Clientes por nivel de riesgo ML
             cursor.execute("""
                 SELECT nivel_riesgo_ml, COUNT(*) as n
                 FROM clientes
@@ -134,7 +129,6 @@ def obtener_datos_bd():
             medio = riesgos.get('Medio', 0)
             bajo  = riesgos.get('Bajo',  0)
 
-            # Top 5 municipios por mora
             cursor.execute("""
                 SELECT municipio,
                        ROUND(AVG(tasa_mora_historica)*100,2) as mora_prom
@@ -149,7 +143,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Top 5 municipios por número de clientes
             cursor.execute("""
                 SELECT municipio, COUNT(*) as total
                 FROM clientes
@@ -163,11 +156,9 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Clientes en mora actual (es_moroso = 1)
             cursor.execute("SELECT COUNT(*) as n FROM clientes WHERE es_moroso = 1")
             mora_ultimo_mes = cursor.fetchone()['n']
 
-            # Top 5 clientes con mayor probabilidad de incumplimiento
             cursor.execute("""
                 SELECT codigo_cliente, municipio,
                        ROUND(probabilidad_ml,2) as prob,
@@ -183,7 +174,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Riesgo por municipio
             cursor.execute("""
                 SELECT municipio,
                        SUM(CASE WHEN nivel_riesgo_ml='Alto'  THEN 1 ELSE 0 END) as alto,
@@ -200,7 +190,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Distribución de mensualidades
             cursor.execute("""
                 SELECT ROUND(mensualidad*1000,0) as valor, COUNT(*) as total
                 FROM clientes
@@ -213,7 +202,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Clientes por municipio y mora
             cursor.execute("""
                 SELECT municipio,
                        COUNT(*) as total,
@@ -227,7 +215,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Distribución de megas
             cursor.execute("""
                 SELECT megas, COUNT(*) as total,
                        ROUND(AVG(mensualidad*1000),0) as mensualidad_prom
@@ -240,7 +227,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Top 10 clientes mayor mensualidad
             cursor.execute("""
                 SELECT codigo_cliente, municipio, megas,
                        ROUND(mensualidad*1000,0) as mensualidad,
@@ -254,7 +240,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Clientes corporativos
             cursor.execute("""
                 SELECT codigo_cliente, municipio, megas,
                        ROUND(mensualidad*1000,0) as mensualidad,
@@ -287,9 +272,8 @@ def obtener_datos_bd():
                     for r in cursor.fetchall()
                 ])
 
-            # ── NUEVAS CONSULTAS ──
+            # ── CONSULTAS DE VEREDAS ──
 
-            # Clientes por vereda
             cursor.execute("""
                 SELECT COALESCE(vereda, 'Sin vereda') as vereda,
                        municipio,
@@ -306,7 +290,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Planes por vereda
             cursor.execute("""
                 SELECT COALESCE(vereda, 'Sin vereda') as vereda,
                        municipio, megas,
@@ -321,7 +304,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Estado de pago por vereda
             cursor.execute("""
                 SELECT COALESCE(vereda, 'Sin vereda') as vereda,
                        municipio,
@@ -337,7 +319,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Top 5 clientes más antiguos
             cursor.execute("""
                 SELECT codigo_cliente, municipio,
                        COALESCE(vereda, 'Sin vereda') as vereda,
@@ -349,11 +330,10 @@ def obtener_datos_bd():
                 LIMIT 5
             """)
             clientes_mas_antiguos = '\n'.join([
-                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): {int(r['antiguedad'])} meses, plan {r['megas']}, ${int(r['mensualidad']):,} COP, {'en mora' if r['es_moroso'] else 'al día'}"
+                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): {int(r['antiguedad'])} meses, plan {r['megas']}, ${int(r['mensualidad']):,} COP, {'en mora' if r['en_mora'] else 'al día'}"
                 for r in cursor.fetchall()
             ])
 
-            # Top 5 clientes más recientes
             cursor.execute("""
                 SELECT codigo_cliente, municipio,
                        COALESCE(vereda, 'Sin vereda') as vereda,
@@ -369,7 +349,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Detalle completo clientes en mora
             cursor.execute("""
                 SELECT codigo_cliente, municipio,
                        COALESCE(vereda, 'Sin vereda') as vereda,
@@ -388,7 +367,6 @@ def obtener_datos_bd():
             ])
             total_mora_detalle = len(rows_mora)
 
-            # Planes por mensualidad exacta
             cursor.execute("""
                 SELECT ROUND(mensualidad*1000,0) as valor,
                        megas,
@@ -403,7 +381,6 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # Corporativos por vereda
             cursor.execute("""
                 SELECT codigo_cliente, municipio,
                        COALESCE(vereda, 'Sin vereda') as vereda,
@@ -415,11 +392,10 @@ def obtener_datos_bd():
                 ORDER BY municipio, vereda, mensualidad DESC
             """)
             corporativos_por_vereda = '\n'.join([
-                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): plan {r['megas']}, ${int(r['mensualidad']):,} COP, {int(r['antiguedad'])} meses, {'en mora' if r['es_moroso'] else 'al día'}"
+                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): plan {r['megas']}, ${int(r['mensualidad']):,} COP, {int(r['antiguedad'])} meses, {'en mora' if r['en_mora'] else 'al día'}"
                 for r in cursor.fetchall()
             ])
 
-            # Tipos de identificación
             cursor.execute("""
                 SELECT tipo_identificacion, COUNT(*) as total
                 FROM clientes
@@ -452,7 +428,6 @@ def obtener_datos_bd():
             "dist_megas":            dist_megas,
             "top_mensualidad":       top_mensualidad,
             "clientes_corporativos": clientes_corporativos,
-            # Nuevas
             "clientes_vereda":         clientes_vereda,
             "plan_por_vereda":         plan_por_vereda,
             "estado_pago_vereda":      estado_pago_vereda,
@@ -842,45 +817,43 @@ SISTCO Sistemas y Comunicaciones SAS — proveedor de internet inalámbrico rura
 - Mensualidad promedio: ${bd['mens_prom']:,.0f} COP
 - Antigüedad promedio: {bd['antig_prom']} meses
 - Tasa de mora promedio: {bd['tasa_prom']}%
-- Clientes actualmente en mora (es_moroso=1): {bd['mora_ultimo_mes']}
+- Clientes actualmente en mora: {bd['mora_ultimo_mes']}
 - Clientes con mora en últimos 3 meses: {bd['en_mora_rec']}
 - Riesgo Alto (modelo ML): {bd['alto']} clientes
 - Riesgo Medio (modelo ML): {bd['medio']} clientes
 - Riesgo Bajo (modelo ML): {bd['bajo']} clientes
 
-═══ TOP 5 CLIENTES MAYOR RIESGO (tiempo real) ═══
+═══ TOP 5 CLIENTES MAYOR RIESGO ═══
 {bd['top_riesgo']}
 
-═══ MUNICIPIOS — TOP 5 POR MORA (tiempo real) ═══
+═══ MUNICIPIOS — TOP 5 POR MORA ═══
 {bd['muni_mora']}
 
-═══ MUNICIPIOS — TOP 5 POR CLIENTES (tiempo real) ═══
+═══ MUNICIPIOS — TOP 5 POR CLIENTES ═══
 {bd['muni_clientes']}
 
-═══ RIESGO ML POR MUNICIPIO (tiempo real) ═══
+═══ RIESGO ML POR MUNICIPIO ═══
 {bd['riesgo_municipio']}
 
-═══ DISTRIBUCIÓN DE MENSUALIDADES (tiempo real) ═══
+═══ DISTRIBUCIÓN DE MENSUALIDADES ═══
 {bd['dist_mensualidades']}
 
-═══ CLIENTES Y MORA POR MUNICIPIO (tiempo real) ═══
+═══ CLIENTES Y MORA POR MUNICIPIO ═══
 {bd['mora_municipio']}
 
-═══ DISTRIBUCIÓN POR PLAN DE MEGAS (tiempo real) ═══
+═══ DISTRIBUCIÓN POR PLAN DE MEGAS ═══
 {bd['dist_megas']}
 
-═══ TOP 10 CLIENTES MAYOR MENSUALIDAD (posibles corporativos) ═══
+═══ TOP 10 CLIENTES MAYOR MENSUALIDAD ═══
 {bd['top_mensualidad']}
 
-═══ CLIENTES CORPORATIVOS — SEGMENTO K-MEANS (alta mensualidad, tiempo real) ═══
-Estos son los clientes del segmento Corporativo identificados por el modelo K-Means.
-Son los clientes con mayor mensualidad y mayor antigüedad de SISTCO:
+═══ CLIENTES CORPORATIVOS — SEGMENTO K-MEANS ═══
 {bd['clientes_corporativos']}
 
-═══ CLIENTES POR VEREDA Y MUNICIPIO (tiempo real) ═══
+═══ CLIENTES POR VEREDA Y MUNICIPIO ═══
 {bd['clientes_vereda']}
 
-═══ PLANES POR VEREDA (tiempo real) ═══
+═══ PLANES POR VEREDA ═══
 {bd['plan_por_vereda']}
 
 ═══ ESTADO DE PAGO POR VEREDA (al día vs en mora) ═══
@@ -892,7 +865,7 @@ Son los clientes con mayor mensualidad y mayor antigüedad de SISTCO:
 ═══ TOP 5 CLIENTES MÁS RECIENTES ═══
 {bd['clientes_mas_recientes']}
 
-═══ DETALLE COMPLETO CLIENTES EN MORA ({bd['total_mora_detalle']} clientes) ═══
+═══ DETALLE CLIENTES EN MORA ({bd['total_mora_detalle']} clientes) ═══
 {bd['detalle_clientes_mora']}
 
 ═══ PLANES POR MENSUALIDAD EXACTA ═══
@@ -917,16 +890,13 @@ Son los clientes con mayor mensualidad y mayor antigüedad de SISTCO:
 
 ═══ INSTRUCCIONES CRÍTICAS ═══
 - Responde SIEMPRE en español, claro y profesional, máximo 3 párrafos
-- Los datos de arriba son el ESTADO EXACTO Y ACTUAL de la base de datos en este preciso momento
-- NUNCA digas "no tengo información" si los datos están en el contexto — búscalos bien antes de responder
-- Si la vereda o municipio que pregunta el usuario está en los datos, responde con los datos exactos
-- Si realmente no existe en los datos, explica que esa vereda o municipio no tiene clientes registrados
-- NUNCA uses datos de preguntas o respuestas anteriores para responder la pregunta actual
-- Cada respuesta debe basarse ÚNICAMENTE en los datos del contexto actual mostrado arriba
+- Los datos de arriba son el ESTADO EXACTO Y ACTUAL de la base de datos
+- NUNCA digas "no tengo información" si los datos están en el contexto — búscalos bien
+- Si la vereda o municipio está en los datos, responde con datos exactos
+- Si realmente no existe, explica que esa vereda no tiene clientes registrados
+- NUNCA uses datos de respuestas anteriores para responder la pregunta actual
 - Nunca menciones nombres de campos, tablas ni términos técnicos de base de datos
-- Habla siempre como un asistente empresarial profesional, no como un sistema técnico
-- En lugar de decir 'el campo es_moroso' di simplemente 'los clientes en mora'
-- En lugar de decir 'según los datos del contexto' di 'según la información actual del sistema'
+- Habla siempre como un asistente empresarial profesional
 - Para clientes específicos por código usa el módulo de Clasificación"""
 
         messages = [{"role": "system", "content": sistema}]
@@ -940,7 +910,7 @@ Son los clientes con mayor mensualidad y mayor antigüedad de SISTCO:
 
         pregunta_enriquecida = f"""{datos.pregunta}
 
-[CONTEXTO NUMÉRICO ACTUALIZADO - USA ESTOS VALORES EXACTOS]:
+[CONTEXTO NUMÉRICO ACTUALIZADO]:
 - Clientes en mora: {bd['mora_ultimo_mes']}
 - Clientes con mora reciente: {bd['en_mora_rec']}
 - Total clientes: {bd['total']}
