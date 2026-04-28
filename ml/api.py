@@ -441,7 +441,9 @@ def obtener_datos_bd():
         }
 
     except Exception as e:
+        import traceback
         print(f"Error MySQL: {e}")
+        print(traceback.format_exc())
         return {
             "total": 781, "tasa_prom": 2.63, "en_mora_rec": 249,
             "ingreso_act": 81158800, "mens_prom": 103917, "antig_prom": 31.5,
