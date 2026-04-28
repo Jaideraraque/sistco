@@ -16,5 +16,7 @@ RUN sed -i "s!/var/www/html!/var/www/html/public!g" /etc/apache2/sites-available
 RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf
 RUN echo '<Directory /var/www/html/public>\n    AllowOverride All\n    Require all granted\n</Directory>' >> /etc/apache2/apache2.conf
 RUN php artisan config:clear && php artisan view:clear || true
-EXPOSE 80
-CMD sed -i "s/Listen 80/Listen ${PORT:-80}/" /etc/apache2/ports.conf && sed -i "s/:80/:${PORT:-80}/" /etc/apache2/sites-available/000-default.conf && apache2ctl -D FOREGROUND
+RUN sed -i "s/Listen 80/Listen 8080/" /etc/apache2/ports.conf
+RUN sed -i "s/:80/:8080/" /etc/apache2/sites-available/000-default.conf
+EXPOSE 8080
+CMD ["apache2ctl", "-D", "FOREGROUND"]
