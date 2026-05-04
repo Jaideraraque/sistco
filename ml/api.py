@@ -273,7 +273,7 @@ def obtener_datos_bd():
                     for r in cursor.fetchall()
                 ])
 
-            # ── NUEVAS CONSULTAS DE VEREDAS ──
+            # ── CONSULTAS DE VEREDAS (VERSIONES MAESTRAS CON GROUP_CONCAT) ──
 
             cursor.execute("""
                 SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio,
@@ -296,25 +296,29 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
-            # ✅ CONSULTA MODIFICADA - Versión resumida (agregada por vereda y municipio)
+            # ✅ CONSULTA MAESTRA 1: Clientes al día con GROUP_CONCAT de códigos
             cursor.execute("""
                 SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio,
-                       COUNT(*) as al_dia
+                       COUNT(*) as al_dia,
+                       GROUP_CONCAT(codigo_cliente ORDER BY mensualidad DESC SEPARATOR ', ') as codigos
                 FROM clientes WHERE es_moroso = 0
                 GROUP BY vereda, municipio ORDER BY municipio, vereda
             """)
             clientes_al_dia_vereda = '\n'.join([
-                f"  - {r['vereda']} ({r['municipio']}): {r['al_dia']} clientes al día"
+                f"  - {r['vereda']} ({r['municipio']}): {r['al_dia']} al día — códigos: {r['codigos'][:100] if r['codigos'] else 'N/A'}"
                 for r in cursor.fetchall()
             ])
 
+            # ✅ CONSULTA MAESTRA 2: Corporativos con GROUP_CONCAT de código y mega
             cursor.execute("""
-                SELECT codigo_cliente, municipio, COALESCE(vereda, 'Sin vereda') as vereda,
-                       megas, ROUND(mensualidad*1000,0) as mensualidad, ROUND(antiguedad_meses,0) as antiguedad
-                FROM clientes WHERE mensualidad >= 500 ORDER BY municipio, vereda, mensualidad DESC
+                SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio,
+                       COUNT(*) as total,
+                       GROUP_CONCAT(CONCAT(codigo_cliente,'(',megas,')') ORDER BY mensualidad DESC SEPARATOR ', ') as detalle
+                FROM clientes WHERE mensualidad >= 500
+                GROUP BY vereda, municipio ORDER BY municipio, vereda
             """)
             corporativos_vereda = '\n'.join([
-                f"  - Código {r['codigo_cliente']} ({r['municipio']}, {r['vereda']}): {r['megas']}, ${int(r['mensualidad']):,} COP, {int(r['antiguedad'])} meses"
+                f"  - {r['vereda']} ({r['municipio']}): {r['total']} corporativos — {r['detalle']}"
                 for r in cursor.fetchall()
             ])
 
@@ -379,8 +383,8 @@ def obtener_datos_bd():
             "clientes_corporativos": clientes_corporativos,
             "clientes_vereda":        clientes_vereda,
             "plan_por_vereda":        plan_por_vereda,
-            "clientes_al_dia_vereda": clientes_al_dia_vereda,  # ✅ Versión resumida
-            "corporativos_vereda":    corporativos_vereda,
+            "clientes_al_dia_vereda": clientes_al_dia_vereda,  # ✅ Versión maestra con códigos
+            "corporativos_vereda":    corporativos_vereda,      # ✅ Versión maestra con detalle
             "resumen_alfabetico":     resumen_alfabetico,
             "mas_antiguos":           mas_antiguos,
             "mas_recientes":          mas_recientes,
@@ -812,10 +816,10 @@ SISTCO Sistemas y Comunicaciones SAS — proveedor de internet inalámbrico rura
 ═══ PLANES POR VEREDA (incluye precio máximo por plan) ═══
 {bd['plan_por_vereda']}
 
-═══ CLIENTES AL DÍA POR VEREDA (resumen por vereda y municipio) ═══
+═══ CLIENTES AL DÍA POR VEREDA (con códigos) ═══
 {bd['clientes_al_dia_vereda']}
 
-═══ CORPORATIVOS POR VEREDA ═══
+═══ CORPORATIVOS POR VEREDA (con códigos y planes) ═══
 {bd['corporativos_vereda']}
 
 ═══ RESUMEN POR VEREDA EN ORDEN ALFABÉTICO ═══
