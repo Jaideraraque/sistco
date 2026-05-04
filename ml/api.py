@@ -13,6 +13,8 @@ from groq import Groq
 from fastapi import UploadFile, File
 import tempfile
 import shutil
+import threading
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -53,11 +55,39 @@ print("Cargando modelos...")
 modelo_clasificacion = joblib.load(os.path.join(BASE, 'modelos', 'modelo_mora.pkl'))
 modelo_segmentacion  = joblib.load(os.path.join(BASE, 'modelos', 'modelo_segmentacion.pkl'))
 modelo_ingresos      = joblib.load(os.path.join(BASE, 'modelos', 'modelo_ingresos.pkl'))
-print("✅ modelo_mora.pkl             — Clasificación de clientes")
+print("✅ modelo_mora.pkl         — Clasificación de clientes")
 print("✅ modelo_segmentacion.pkl — Segmentación de clientes")
 print("✅ modelo_ingresos.pkl     — Proyección de ingresos")
 print("🚀 API lista en http://localhost:8000")
 print(f"🔗 Conectado a DB: {os.environ.get('DB_HOST', '127.0.0.1')}:{os.environ.get('DB_PORT', 3306)}/{os.environ.get('DB_DATABASE', 'sistco')}")
+
+# ── Cache de ubicaciones ──
+_cache_ubicaciones = {"veredas": set(), "municipios": set(), "ultimo_refresh": 0}
+
+def _cargar_cache_ubicaciones():
+    try:
+        conn = get_db()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT DISTINCT vereda FROM clientes WHERE vereda IS NOT NULL")
+            veredas = {r['vereda'].lower().strip() for r in cursor.fetchall()}
+            cursor.execute("SELECT DISTINCT municipio FROM clientes WHERE municipio IS NOT NULL")
+            municipios = {r['municipio'].lower().strip() for r in cursor.fetchall()}
+        conn.close()
+        _cache_ubicaciones["veredas"]        = veredas
+        _cache_ubicaciones["municipios"]     = municipios
+        _cache_ubicaciones["ultimo_refresh"] = time.time()
+        print(f"✅ Cache ubicaciones: {len(veredas)} veredas, {len(municipios)} municipios")
+    except Exception as e:
+        print(f"⚠️  Cache ubicaciones error: {e}")
+
+def _refresh_cache_loop():
+    while True:
+        time.sleep(1800)  # 30 minutos
+        _cargar_cache_ubicaciones()
+
+# Cargar cache al arrancar
+_cargar_cache_ubicaciones()
+threading.Thread(target=_refresh_cache_loop, daemon=True).start()
 
 # ── Schemas ──
 class DatosCliente(BaseModel):
@@ -121,8 +151,7 @@ def obtener_datos_bd():
 
             cursor.execute("""
                 SELECT nivel_riesgo_ml, COUNT(*) as n
-                FROM clientes
-                WHERE nivel_riesgo_ml IS NOT NULL
+                FROM clientes WHERE nivel_riesgo_ml IS NOT NULL
                 GROUP BY nivel_riesgo_ml
             """)
             riesgos = {r['nivel_riesgo_ml']: r['n'] for r in cursor.fetchall()}
@@ -131,44 +160,26 @@ def obtener_datos_bd():
             bajo  = riesgos.get('Bajo',  0)
 
             cursor.execute("""
-                SELECT municipio,
-                       ROUND(AVG(tasa_mora_historica)*100,2) as mora_prom
-                FROM clientes
-                WHERE municipio IS NOT NULL
-                GROUP BY municipio
-                ORDER BY mora_prom DESC
-                LIMIT 5
+                SELECT municipio, ROUND(AVG(tasa_mora_historica)*100,2) as mora_prom
+                FROM clientes WHERE municipio IS NOT NULL
+                GROUP BY municipio ORDER BY mora_prom DESC LIMIT 5
             """)
-            muni_mora = '\n'.join([
-                f"  - {r['municipio']}: {r['mora_prom']}%"
-                for r in cursor.fetchall()
-            ])
+            muni_mora = '\n'.join([f"  - {r['municipio']}: {r['mora_prom']}%" for r in cursor.fetchall()])
 
             cursor.execute("""
-                SELECT municipio, COUNT(*) as total
-                FROM clientes
-                WHERE municipio IS NOT NULL
-                GROUP BY municipio
-                ORDER BY total DESC
-                LIMIT 5
+                SELECT municipio, COUNT(*) as total FROM clientes
+                WHERE municipio IS NOT NULL GROUP BY municipio ORDER BY total DESC LIMIT 5
             """)
-            muni_clientes = '\n'.join([
-                f"  - {r['municipio']}: {r['total']} clientes"
-                for r in cursor.fetchall()
-            ])
+            muni_clientes = '\n'.join([f"  - {r['municipio']}: {r['total']} clientes" for r in cursor.fetchall()])
 
             cursor.execute("SELECT COUNT(*) as n FROM clientes WHERE es_moroso = 1")
             mora_ultimo_mes = cursor.fetchone()['n']
 
             cursor.execute("""
-                SELECT codigo_cliente, municipio,
-                       ROUND(probabilidad_ml,2) as prob,
-                       nivel_riesgo_ml,
-                       ROUND(tasa_mora_historica*100,1) as mora_hist
-                FROM clientes
-                WHERE probabilidad_ml IS NOT NULL
-                ORDER BY probabilidad_ml DESC
-                LIMIT 5
+                SELECT codigo_cliente, municipio, ROUND(probabilidad_ml,2) as prob,
+                       nivel_riesgo_ml, ROUND(tasa_mora_historica*100,1) as mora_hist
+                FROM clientes WHERE probabilidad_ml IS NOT NULL
+                ORDER BY probabilidad_ml DESC LIMIT 5
             """)
             top_riesgo_str = '\n'.join([
                 f"  - Código {r['codigo_cliente']} ({r['municipio']}): {r['prob']}% probabilidad, mora histórica {r['mora_hist']}%"
@@ -181,10 +192,8 @@ def obtener_datos_bd():
                        SUM(CASE WHEN nivel_riesgo_ml='Medio' THEN 1 ELSE 0 END) as medio,
                        SUM(CASE WHEN nivel_riesgo_ml='Bajo'  THEN 1 ELSE 0 END) as bajo,
                        COUNT(*) as total
-                FROM clientes
-                WHERE nivel_riesgo_ml IS NOT NULL
-                GROUP BY municipio
-                ORDER BY alto DESC
+                FROM clientes WHERE nivel_riesgo_ml IS NOT NULL
+                GROUP BY municipio ORDER BY alto DESC
             """)
             riesgo_municipio = '\n'.join([
                 f"  - {r['municipio']}: Alto={r['alto']}, Medio={r['medio']}, Bajo={r['bajo']} (total {r['total']})"
@@ -193,23 +202,15 @@ def obtener_datos_bd():
 
             cursor.execute("""
                 SELECT ROUND(mensualidad*1000,0) as valor, COUNT(*) as total
-                FROM clientes
-                GROUP BY valor
-                ORDER BY total DESC
-                LIMIT 10
+                FROM clientes GROUP BY valor ORDER BY total DESC LIMIT 10
             """)
             dist_mensualidades = '\n'.join([
-                f"  - ${int(r['valor']):,} COP: {r['total']} clientes"
-                for r in cursor.fetchall()
+                f"  - ${int(r['valor']):,} COP: {r['total']} clientes" for r in cursor.fetchall()
             ])
 
             cursor.execute("""
-                SELECT municipio,
-                       COUNT(*) as total,
-                       SUM(es_moroso) as en_mora
-                FROM clientes
-                GROUP BY municipio
-                ORDER BY total DESC
+                SELECT municipio, COUNT(*) as total, SUM(es_moroso) as en_mora
+                FROM clientes GROUP BY municipio ORDER BY total DESC
             """)
             mora_municipio = '\n'.join([
                 f"  - {r['municipio']}: {r['total']} clientes, {r['en_mora']} en mora"
@@ -217,11 +218,8 @@ def obtener_datos_bd():
             ])
 
             cursor.execute("""
-                SELECT megas, COUNT(*) as total,
-                       ROUND(AVG(mensualidad*1000),0) as mensualidad_prom
-                FROM clientes
-                GROUP BY megas
-                ORDER BY total DESC
+                SELECT megas, COUNT(*) as total, ROUND(AVG(mensualidad*1000),0) as mensualidad_prom
+                FROM clientes GROUP BY megas ORDER BY total DESC
             """)
             dist_megas = '\n'.join([
                 f"  - {r['megas']}: {r['total']} clientes, mensualidad promedio ${int(r['mensualidad_prom']):,} COP"
@@ -229,12 +227,8 @@ def obtener_datos_bd():
             ])
 
             cursor.execute("""
-                SELECT codigo_cliente, municipio, megas,
-                       ROUND(mensualidad*1000,0) as mensualidad,
-                       nivel_riesgo_ml
-                FROM clientes
-                ORDER BY mensualidad DESC
-                LIMIT 10
+                SELECT codigo_cliente, municipio, megas, ROUND(mensualidad*1000,0) as mensualidad, nivel_riesgo_ml
+                FROM clientes ORDER BY mensualidad DESC LIMIT 10
             """)
             top_mensualidad = '\n'.join([
                 f"  - Código {r['codigo_cliente']} ({r['municipio']}): {r['megas']}, ${int(r['mensualidad']):,} COP, riesgo {r['nivel_riesgo_ml'] or 'N/A'}"
@@ -245,12 +239,9 @@ def obtener_datos_bd():
                 SELECT codigo_cliente, municipio, megas,
                        ROUND(mensualidad*1000,0) as mensualidad,
                        ROUND(antiguedad_meses,0) as antiguedad,
-                       ROUND(tasa_mora_historica*100,2) as mora_hist,
-                       nivel_riesgo_ml
-                FROM clientes
-                WHERE mensualidad >= 500
-                ORDER BY mensualidad DESC, antiguedad_meses DESC
-                LIMIT 6
+                       ROUND(tasa_mora_historica*100,2) as mora_hist, nivel_riesgo_ml
+                FROM clientes WHERE mensualidad >= 500
+                ORDER BY mensualidad DESC, antiguedad_meses DESC LIMIT 6
             """)
             rows = cursor.fetchall()
             if rows:
@@ -261,76 +252,29 @@ def obtener_datos_bd():
             else:
                 cursor.execute("""
                     SELECT codigo_cliente, municipio, megas,
-                           ROUND(mensualidad*1000,0) as mensualidad,
-                           ROUND(antiguedad_meses,0) as antiguedad,
-                           ROUND(tasa_mora_historica*100,2) as mora_hist
-                    FROM clientes
-                    ORDER BY mensualidad DESC
-                    LIMIT 4
+                           ROUND(mensualidad*1000,0) as mensualidad, ROUND(antiguedad_meses,0) as antiguedad
+                    FROM clientes ORDER BY mensualidad DESC LIMIT 4
                 """)
                 clientes_corporativos = '\n'.join([
                     f"  - Código {r['codigo_cliente']} ({r['municipio']}): plan {r['megas']}, ${int(r['mensualidad']):,} COP mensual, {int(r['antiguedad'])} meses antigüedad"
                     for r in cursor.fetchall()
                 ])
 
-            # ── CONSULTAS DE VEREDAS (VERSIONES MAESTRAS CON GROUP_CONCAT) ──
+            # ── CONSULTAS DE VEREDAS ──
 
             cursor.execute("""
                 SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio,
                        COUNT(*) as total, SUM(es_moroso) as en_mora,
-                       ROUND(AVG(tasa_mora_historica)*100,2) as mora_prom
-                FROM clientes GROUP BY vereda, municipio ORDER BY municipio, total DESC
-            """)
-            clientes_vereda = '\n'.join([
-                f"  - {r['vereda']} ({r['municipio']}): {r['total']} clientes, {r['en_mora']} en mora, mora prom {r['mora_prom']}%"
-                for r in cursor.fetchall()
-            ])
-
-            cursor.execute("""
-                SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio, megas,
-                       COUNT(*) as total, ROUND(MAX(mensualidad*1000),0) as mens_max
-                FROM clientes GROUP BY vereda, municipio, megas ORDER BY vereda, mens_max DESC
-            """)
-            plan_por_vereda = '\n'.join([
-                f"  - {r['vereda']} ({r['municipio']}): plan {r['megas']}, {r['total']} clientes, max ${int(r['mens_max']):,} COP"
-                for r in cursor.fetchall()
-            ])
-
-            # ✅ CONSULTA MAESTRA 1: Clientes al día con GROUP_CONCAT de códigos
-            cursor.execute("""
-                SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio,
-                       COUNT(*) as al_dia,
-                       GROUP_CONCAT(codigo_cliente ORDER BY mensualidad DESC SEPARATOR ', ') as codigos
-                FROM clientes WHERE es_moroso = 0
-                GROUP BY vereda, municipio ORDER BY municipio, vereda
-            """)
-            clientes_al_dia_vereda = '\n'.join([
-                f"  - {r['vereda']} ({r['municipio']}): {r['al_dia']} al día — códigos: {r['codigos'][:100] if r['codigos'] else 'N/A'}"
-                for r in cursor.fetchall()
-            ])
-
-            # ✅ CONSULTA MAESTRA 2: Corporativos con GROUP_CONCAT de código y mega
-            cursor.execute("""
-                SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio,
-                       COUNT(*) as total,
-                       GROUP_CONCAT(CONCAT(codigo_cliente,'(',megas,')') ORDER BY mensualidad DESC SEPARATOR ', ') as detalle
-                FROM clientes WHERE mensualidad >= 500
-                GROUP BY vereda, municipio ORDER BY municipio, vereda
-            """)
-            corporativos_vereda = '\n'.join([
-                f"  - {r['vereda']} ({r['municipio']}): {r['total']} corporativos — {r['detalle']}"
-                for r in cursor.fetchall()
-            ])
-
-            cursor.execute("""
-                SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio,
+                       SUM(CASE WHEN es_moroso=0 THEN 1 ELSE 0 END) as al_dia,
+                       ROUND(AVG(tasa_mora_historica)*100,2) as mora_prom,
                        SUM(CASE WHEN mensualidad >= 500 THEN 1 ELSE 0 END) as corporativos,
                        SUM(CASE WHEN megas = '5M' THEN 1 ELSE 0 END) as plan_5m,
-                       COUNT(*) as total
-                FROM clientes GROUP BY vereda, municipio ORDER BY vereda ASC
+                       ROUND(MAX(mensualidad*1000),0) as mens_max,
+                       GROUP_CONCAT(DISTINCT megas ORDER BY mensualidad DESC SEPARATOR ', ') as planes
+                FROM clientes GROUP BY vereda, municipio ORDER BY municipio, total DESC
             """)
-            resumen_alfabetico = '\n'.join([
-                f"  - {r['vereda']} ({r['municipio']}): {r['corporativos']} corporativos, {r['plan_5m']} plan 5M, {r['total']} total"
+            resumen_veredas = '\n'.join([
+                f"  - {r['vereda']} ({r['municipio']}): {r['total']} clientes, {r['al_dia']} al día, {r['en_mora']} en mora, mora prom {r['mora_prom']}%, corporativos {r['corporativos']}, plan 5M {r['plan_5m']}, plan más costoso ${int(r['mens_max']):,} COP, planes: {r['planes']}"
                 for r in cursor.fetchall()
             ])
 
@@ -375,20 +319,16 @@ def obtener_datos_bd():
             "muni_clientes":   muni_clientes,
             "mora_ultimo_mes": mora_ultimo_mes,
             "top_riesgo":      top_riesgo_str,
-            "riesgo_municipio":   riesgo_municipio,
-            "dist_mensualidades": dist_mensualidades,
-            "mora_municipio":     mora_municipio,
-            "dist_megas":         dist_megas,
-            "top_mensualidad":    top_mensualidad,
+            "riesgo_municipio":      riesgo_municipio,
+            "dist_mensualidades":    dist_mensualidades,
+            "mora_municipio":        mora_municipio,
+            "dist_megas":            dist_megas,
+            "top_mensualidad":       top_mensualidad,
             "clientes_corporativos": clientes_corporativos,
-            "clientes_vereda":        clientes_vereda,
-            "plan_por_vereda":        plan_por_vereda,
-            "clientes_al_dia_vereda": clientes_al_dia_vereda,  # ✅ Versión maestra con códigos
-            "corporativos_vereda":    corporativos_vereda,      # ✅ Versión maestra con detalle
-            "resumen_alfabetico":     resumen_alfabetico,
-            "mas_antiguos":           mas_antiguos,
-            "mas_recientes":          mas_recientes,
-            "total_80k":              total_80k,
+            "resumen_veredas":       resumen_veredas,
+            "mas_antiguos":          mas_antiguos,
+            "mas_recientes":         mas_recientes,
+            "total_80k":             total_80k,
         }
 
     except Exception as e:
@@ -399,24 +339,14 @@ def obtener_datos_bd():
             "total": 781, "tasa_prom": 2.63, "en_mora_rec": 249,
             "ingreso_act": 81158800, "mens_prom": 103917, "antig_prom": 31.5,
             "alto": 28, "medio": 145, "bajo": 608,
-            "muni_mora":       "  - No disponible",
-            "muni_clientes":   "  - No disponible",
-            "mora_ultimo_mes": 0,
-            "top_riesgo":      "  - No disponible",
-            "riesgo_municipio":   "  - No disponible",
-            "dist_mensualidades": "  - No disponible",
-            "mora_municipio":     "  - No disponible",
-            "dist_megas":         "  - No disponible",
-            "top_mensualidad":    "  - No disponible",
-            "clientes_corporativos": "  - No disponible",
-            "clientes_vereda":        "  - No disponible",
-            "plan_por_vereda":        "  - No disponible",
-            "clientes_al_dia_vereda": "  - No disponible",
-            "corporativos_vereda":    "  - No disponible",
-            "resumen_alfabetico":     "  - No disponible",
-            "mas_antiguos":           "  - No disponible",
-            "mas_recientes":          "  - No disponible",
-            "total_80k":              0,
+            "muni_mora": "  - No disponible", "muni_clientes": "  - No disponible",
+            "mora_ultimo_mes": 0, "top_riesgo": "  - No disponible",
+            "riesgo_municipio": "  - No disponible", "dist_mensualidades": "  - No disponible",
+            "mora_municipio": "  - No disponible", "dist_megas": "  - No disponible",
+            "top_mensualidad": "  - No disponible", "clientes_corporativos": "  - No disponible",
+            "resumen_veredas": "  - No disponible",
+            "mas_antiguos": "  - No disponible", "mas_recientes": "  - No disponible",
+            "total_80k": 0,
         }
 
 # ── Función auxiliar: calcular proyecciones ──
@@ -458,6 +388,186 @@ def _calcular_proyecciones():
     except:
         return []
 
+# ── Motor de detección de intenciones ──
+def detectar_intenciones(pregunta: str) -> set:
+    p = pregunta.lower().strip()
+    intenciones = set()
+
+    # Estrategia A — Semántica por palabras clave
+    palabras_ubicacion   = ["vereda","finca","barrio","corregimiento","sector","parcela","zona"]
+    palabras_mora        = ["mora","riesgo","deuda","cobro","atrasado","vencido","incumplimiento","pago"]
+    palabras_finanzas    = ["ingreso","facturación","facturacion","mensualidad","proyección","proyeccion","precio","dinero","plata","cobro","revenue"]
+    palabras_segmentacion= ["segmento","cluster","grupo","perfil","kmeans","clasificacion","clasificación"]
+    palabras_clientes    = ["código","codigo","antiguo","reciente","instalacion","instalación","corporativo","cliente","quien","quién"]
+    palabras_megas       = ["mega","megas","plan","servicio","internet","mb","m "]
+
+    if any(p_k in p for p_k in palabras_ubicacion):   intenciones.add("UBICACION")
+    if any(p_k in p for p_k in palabras_mora):        intenciones.add("MORA")
+    if any(p_k in p for p_k in palabras_finanzas):    intenciones.add("FINANZAS")
+    if any(p_k in p for p_k in palabras_segmentacion):intenciones.add("SEGMENTACION")
+    if any(p_k in p for p_k in palabras_clientes):    intenciones.add("CLIENTES")
+    if any(p_k in p for p_k in palabras_megas):       intenciones.add("MEGAS")
+
+    # Estrategia B — Match dinámico contra cache (normalizado)
+    for vereda in _cache_ubicaciones.get("veredas", set()):
+        # Match parcial: alguna palabra de la vereda aparece en la pregunta
+        partes_vereda = vereda.replace("vereda ", "").split()
+        if any(parte in p for parte in partes_vereda if len(parte) > 3):
+            intenciones.add("UBICACION")
+            break
+
+    for municipio in _cache_ubicaciones.get("municipios", set()):
+        if municipio in p:
+            intenciones.add("MUNICIPIO")
+            break
+
+    # Preguntas especiales
+    if any(x in p for x in ["cuantos tienen", "más de 1", "mas de 1", "dos servicio", "doble"]):
+        intenciones.add("MULTIPLES")
+    if "80000" in p or "80.000" in p or "ochenta" in p:
+        intenciones.add("PRECIO_80K")
+    if any(x in p for x in ["antiguo", "reciente", "primer", "ultimo", "último", "instaló", "instalo"]):
+        intenciones.add("CLIENTES")
+    if any(x in p for x in ["cómo vamos", "como vamos", "resumen", "general", "estado"]):
+        intenciones.add("GENERAL")
+
+    # Si no detectó nada, asumir GENERAL
+    if not intenciones:
+        intenciones.add("GENERAL")
+
+    return intenciones
+
+# ── Constructor de system prompt dinámico ──
+def construir_system_prompt(intenciones: set, bd: dict, segmentos, auc: float, mape: float, silueta: float) -> str:
+
+    # Estimador simple de tokens (1 token ≈ 4 caracteres)
+    def est_tokens(texto): return len(texto) // 4
+
+    # BLOQUE BASE — siempre presente
+    base = f"""Eres el asistente inteligente de SISTCO-ML. SISTCO Sistemas y Comunicaciones SAS — proveedor de internet inalámbrico rural en Santander, Colombia.
+
+═══ DATOS BASE ═══
+- Total clientes: {bd['total']} | Ingreso mensual: ${bd['ingreso_act']:,.0f} COP
+- Mensualidad promedio: ${bd['mens_prom']:,.0f} COP | Antigüedad promedio: {bd['antig_prom']} meses
+- Tasa mora promedio: {bd['tasa_prom']}% | En mora ahora: {bd['mora_ultimo_mes']} | Mora reciente: {bd['en_mora_rec']}
+- Riesgo Alto: {bd['alto']} | Medio: {bd['medio']} | Bajo: {bd['bajo']}
+- Clientes con servicio $80,000: {bd['total_80k']}
+- Clientes con más de un servicio: ninguno (un servicio por cliente)"""
+
+    bloques = [base]
+    tokens_actuales = est_tokens(base)
+    HARD_CAP = 9000
+
+    # Función para agregar bloque si cabe
+    def agregar(bloque):
+        nonlocal tokens_actuales
+        t = est_tokens(bloque)
+        if tokens_actuales + t < HARD_CAP:
+            bloques.append(bloque)
+            tokens_actuales += t
+            return True
+        return False
+
+    # BLOQUE UBICACION — veredas completas
+    if "UBICACION" in intenciones or "MUNICIPIO" in intenciones:
+        agregar(f"""
+═══ RESUMEN POR VEREDA (total, al día, en mora, corporativos, plan más costoso) ═══
+{bd['resumen_veredas']}""")
+
+    # BLOQUE MORA
+    if "MORA" in intenciones:
+        agregar(f"""
+═══ MUNICIPIOS TOP 5 POR MORA ═══
+{bd['muni_mora']}
+═══ RIESGO ML POR MUNICIPIO ═══
+{bd['riesgo_municipio']}
+═══ TOP 5 CLIENTES MAYOR RIESGO ═══
+{bd['top_riesgo']}""")
+
+    # BLOQUE MUNICIPIO
+    if "MUNICIPIO" in intenciones:
+        agregar(f"""
+═══ CLIENTES Y MORA POR MUNICIPIO ═══
+{bd['mora_municipio']}
+═══ MUNICIPIOS TOP 5 POR CLIENTES ═══
+{bd['muni_clientes']}""")
+
+    # BLOQUE FINANZAS
+    if "FINANZAS" in intenciones:
+        try:
+            proyecciones = _calcular_proyecciones()
+            proy = '\n'.join([f"  - {p['mes_nombre']}: ${p['ingreso_proyectado']:,.0f} COP" for p in proyecciones])
+        except:
+            proy = "  - No disponible"
+        agregar(f"""
+═══ DISTRIBUCIÓN DE MENSUALIDADES ═══
+{bd['dist_mensualidades']}
+═══ PROYECCIÓN INGRESOS 6 MESES ═══
+{proy}
+═══ MODELOS ML ═══
+Clasificación: AUC-ROC {auc} | Proyección: MAPE {mape}% | Segmentación: Silueta {silueta}""")
+
+    # BLOQUE MEGAS / PLANES
+    if "MEGAS" in intenciones:
+        agregar(f"""
+═══ DISTRIBUCIÓN POR PLAN DE MEGAS ═══
+{bd['dist_megas']}
+═══ PLANES POR MENSUALIDAD EXACTA ═══
+{bd['dist_mensualidades']}""")
+
+    # BLOQUE CLIENTES
+    if "CLIENTES" in intenciones:
+        agregar(f"""
+═══ TOP 5 CLIENTES MÁS ANTIGUOS ═══
+{bd['mas_antiguos']}
+═══ TOP 5 CLIENTES MÁS RECIENTES ═══
+{bd['mas_recientes']}
+═══ TOP 10 MAYOR MENSUALIDAD ═══
+{bd['top_mensualidad']}
+═══ CLIENTES CORPORATIVOS ═══
+{bd['clientes_corporativos']}""")
+
+    # BLOQUE SEGMENTACION
+    if "SEGMENTACION" in intenciones:
+        resumen_segs = '\n'.join([
+            f"  - {s['nombre']}: {s['n_clientes']} clientes ({s['porcentaje']}%), mora {round(s['tasa_mora']*100,1)}%, antigüedad {round(s['antiguedad_promedio'])}m"
+            for s in segmentos
+        ])
+        agregar(f"""
+═══ SEGMENTOS K-Means K=5 ═══
+{resumen_segs}
+Silueta: {silueta} | Modelos ML: AUC-ROC {auc}""")
+
+    # BLOQUE GENERAL — si no hay nada específico o se pidió resumen
+    if "GENERAL" in intenciones or len(intenciones) == 0:
+        agregar(f"""
+═══ MUNICIPIOS TOP 5 POR CLIENTES ═══
+{bd['muni_clientes']}
+═══ DISTRIBUCIÓN POR PLAN DE MEGAS ═══
+{bd['dist_megas']}
+═══ CLIENTES CORPORATIVOS ═══
+{bd['clientes_corporativos']}
+═══ MODELOS ML ═══
+Clasificación: AUC-ROC {auc} | Proyección: MAPE {mape}% | Segmentación: Silueta {silueta}""")
+
+    # INSTRUCCIONES — siempre al final
+    instrucciones = """
+═══ INSTRUCCIONES ═══
+- Responde SIEMPRE en español, claro y profesional, máximo 3 párrafos
+- Los datos de arriba son EXACTOS y ACTUALES — úsalos directamente
+- NUNCA digas "no tengo información" si los datos están aquí — búscalos bien
+- Para veredas: busca en RESUMEN POR VEREDA el nombre exacto o similar
+- Para plan más costoso en vereda X: busca el mens_max de esa vereda en el resumen
+- Para clientes al día en vereda X: busca el campo al_dia de esa vereda
+- Para corporativos por vereda: busca el campo corporativos de esa vereda
+- Para más de un servicio: ningún cliente tiene más de un servicio actualmente
+- Para cliente más antiguo/reciente: usa TOP 5 CLIENTES MÁS ANTIGUOS/RECIENTES
+- Nunca menciones nombres de campos técnicos de base de datos
+- Habla como asistente empresarial profesional"""
+
+    bloques.append(instrucciones)
+    return '\n'.join(bloques)
+
 # ── Endpoints ──
 @app.get("/")
 def health():
@@ -465,16 +575,20 @@ def health():
         "status":  "ok",
         "sistema": "SISTCO-ML API",
         "version": "2.0.0",
-        "mejoras": ["MySQL tiempo real", "Historial conversación", "Contexto de sesión", "Veredas"]
+        "cache_veredas": len(_cache_ubicaciones.get("veredas", set())),
+        "cache_municipios": len(_cache_ubicaciones.get("municipios", set())),
     }
 
 @app.get("/debug")
 def debug():
     bd = obtener_datos_bd()
+    test_intenciones = detectar_intenciones("cuantos clientes hay en la vereda Lisboa")
     return {
-        "tiene_veredas": "clientes_vereda" in bd,
-        "muestra_vereda": bd.get("clientes_vereda", "NO EXISTE")[:300],
+        "tiene_veredas": "resumen_veredas" in bd,
+        "muestra_vereda": bd.get("resumen_veredas", "NO EXISTE")[:400],
         "total_80k": bd.get("total_80k", 0),
+        "cache_veredas": list(_cache_ubicaciones.get("veredas", set()))[:10],
+        "test_intenciones": list(test_intenciones),
     }
 
 @app.post("/clasificar/cliente")
@@ -482,7 +596,6 @@ def clasificar_cliente(datos: DatosCliente):
     try:
         modelo  = modelo_clasificacion['model']
         scaler  = modelo_clasificacion['scaler']
-
         ratio_mora_reciente = datos.moras_ult_6_meses / (datos.n_meses_activos + 1)
         tendencia_pago      = datos.moras_ult_3_meses - (datos.moras_ult_6_meses - datos.moras_ult_3_meses)
         mora_reciente_bin   = 1 if datos.moras_ult_3_meses > 0 else 0
@@ -505,14 +618,12 @@ def clasificar_cliente(datos: DatosCliente):
         ]]
         features_sc  = scaler.transform(features)
         probabilidad = float(modelo.predict_proba(features_sc)[0][1])
-
         if probabilidad >= 0.70:
             nivel = "Alto";  color = "rojo";    accion = "Contactar de inmediato para gestión de cobro preventiva"
         elif probabilidad >= 0.40:
             nivel = "Medio"; color = "naranja"; accion = "Monitorear y enviar recordatorio de pago"
         else:
             nivel = "Bajo";  color = "verde";   accion = "Sin acción requerida"
-
         return {
             "probabilidad":    round(probabilidad * 100, 2),
             "nivel_riesgo":    nivel,
@@ -524,7 +635,6 @@ def clasificar_cliente(datos: DatosCliente):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/segmentar/cliente")
 def segmentar_cliente(datos: DatosSegmentacion):
     try:
@@ -532,7 +642,6 @@ def segmentar_cliente(datos: DatosSegmentacion):
         scaler  = modelo_segmentacion['scaler']
         nombres = modelo_segmentacion['nombres_segmentos']
         info    = modelo_segmentacion['segmentos_info']
-
         features = [[
             datos.mensualidad, datos.antiguedad_meses,
             datos.n_meses_activos, datos.n_moras_historicas,
@@ -544,7 +653,6 @@ def segmentar_cliente(datos: DatosSegmentacion):
         cluster_id  = int(kmeans.predict(features_sc)[0])
         nombre      = nombres.get(str(cluster_id), f"Segmento {cluster_id}")
         seg_info    = next((s for s in info if s['cluster'] == cluster_id), {})
-
         return {
             "cluster_id":      cluster_id,
             "nombre_segmento": nombre,
@@ -554,7 +662,6 @@ def segmentar_cliente(datos: DatosSegmentacion):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/proyectar/ingresos")
 def proyectar_ingresos():
@@ -570,7 +677,6 @@ def proyectar_ingresos():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/segmentos/resumen")
 def resumen_segmentos():
@@ -672,7 +778,7 @@ async def procesar_excel(archivo: UploadFile = File(...)):
             df_raw = df_raw.iloc[:, :100]
 
         col_names_raw = list(df_raw.columns)
-        DESC_KEEP  = ["T.I", "Codigo Cliente", "Mensualidad", "Megas", "Municipio", "Fecha de Instalacion"]
+        DESC_KEEP   = ["T.I", "Codigo Cliente", "Mensualidad", "Megas", "Municipio", "Fecha de Instalacion"]
         PAGO_USADAS = col_names_raw[9:96]
 
         df = df_raw[DESC_KEEP + PAGO_USADAS].copy()
@@ -687,18 +793,18 @@ async def procesar_excel(archivo: UploadFile = File(...)):
         df.loc[df["Fecha de Instalacion"] > FECHA_REF, "Fecha de Instalacion"] = pd.NaT
         df["Codigo Cliente"] = pd.to_numeric(df["Codigo Cliente"], errors="coerce").astype("Int64")
 
-        df["antiguedad_dias"]   = (FECHA_REF - df["Fecha de Instalacion"]).dt.days
-        df["antiguedad_meses"]  = (df["antiguedad_dias"] / 30.44).fillna(df["antiguedad_dias"].median() / 30.44)
-        df["n_meses_activos"]   = ((df_cls == "OK") | (df_cls == "MORA")).sum(axis=1)
-        df["n_moras_historicas"]= (df_cls == "MORA").sum(axis=1)
+        df["antiguedad_dias"]    = (FECHA_REF - df["Fecha de Instalacion"]).dt.days
+        df["antiguedad_meses"]   = (df["antiguedad_dias"] / 30.44).fillna(df["antiguedad_dias"].median() / 30.44)
+        df["n_meses_activos"]    = ((df_cls == "OK") | (df_cls == "MORA")).sum(axis=1)
+        df["n_moras_historicas"] = (df_cls == "MORA").sum(axis=1)
         df["tasa_mora_historica"]= np.where(df["n_meses_activos"] > 0, df["n_moras_historicas"] / df["n_meses_activos"], 0.0)
-        df["es_moroso"]         = (df["n_moras_historicas"] >= 1).astype(int)
-        df["moras_ult_3_meses"] = (df_cls[PAGO_USADAS[-3:]] == "MORA").sum(axis=1)
-        df["moras_ult_6_meses"] = (df_cls[PAGO_USADAS[-6:]] == "MORA").sum(axis=1)
-        df["racha_limpia_final"]= df_cls.apply(racha_limpia, axis=1)
-        df_dias12               = df[PAGO_USADAS[-12:]].map(extraer_dia_pago)
+        df["es_moroso"]          = (df["n_moras_historicas"] >= 1).astype(int)
+        df["moras_ult_3_meses"]  = (df_cls[PAGO_USADAS[-3:]] == "MORA").sum(axis=1)
+        df["moras_ult_6_meses"]  = (df_cls[PAGO_USADAS[-6:]] == "MORA").sum(axis=1)
+        df["racha_limpia_final"] = df_cls.apply(racha_limpia, axis=1)
+        df_dias12                = df[PAGO_USADAS[-12:]].map(extraer_dia_pago)
         df["dia_prom_pago_ult12"]= df_dias12.mean(axis=1).fillna(df_dias12.mean(axis=1).median())
-        df["metodo_pago_pred"]  = df[PAGO_USADAS[-12:]].apply(metodo_predominante, axis=1)
+        df["metodo_pago_pred"]   = df[PAGO_USADAS[-12:]].apply(metodo_predominante, axis=1)
 
         megas_orden  = ["5M","8M","10M","12M","15M","30M","40M","50M","150M","160M","DESCONOCIDO"]
         megas_map    = {v: i for i, v in enumerate(megas_orden)}
@@ -734,12 +840,7 @@ async def procesar_excel(archivo: UploadFile = File(...)):
             })
 
         os.unlink(ruta_tmp)
-
-        return {
-            "status":          "ok",
-            "total_clientes":  len(registros),
-            "registros":       registros,
-        }
+        return {"status": "ok", "total_clientes": len(registros), "registros": registros}
 
     except Exception as e:
         return {"status": "error", "mensaje": str(e)}
@@ -747,147 +848,36 @@ async def procesar_excel(archivo: UploadFile = File(...)):
 @app.post("/asistente/consulta")
 def consulta_asistente(datos: PreguntaAsistente):
     try:
-        bd = obtener_datos_bd()
-
+        bd       = obtener_datos_bd()
+        auc      = round(modelo_clasificacion['auc_roc'], 4)
+        mape     = round(modelo_ingresos['tabla_comparativa'][0]['MAPE%'], 2)
+        silueta  = round(modelo_segmentacion['silhouette_score'], 4)
         segmentos = modelo_segmentacion['segmentos_info']
-        auc       = round(modelo_clasificacion['auc_roc'], 4)
-        mape      = round(modelo_ingresos['tabla_comparativa'][0]['MAPE%'], 2)
-        silueta   = round(modelo_segmentacion['silhouette_score'], 4)
 
-        resumen_segs = '\n'.join([
-            f"  - {s['nombre']}: {s['n_clientes']} clientes ({s['porcentaje']}%), mora {round(s['tasa_mora']*100,1)}%, antigüedad {round(s['antiguedad_promedio'])}m"
-            for s in segmentos
-        ])
+        # Detectar intenciones y construir prompt dinámico
+        intenciones = detectar_intenciones(datos.pregunta)
+        sistema     = construir_system_prompt(intenciones, bd, segmentos, auc, mape, silueta)
 
-        try:
-            proyecciones = _calcular_proyecciones()
-            proy_texto   = '\n'.join([
-                f"  - {p['mes_nombre']}: ${p['ingreso_proyectado']:,.0f} COP"
-                for p in proyecciones
-            ])
-        except:
-            proy_texto = '  - No disponible'
-
-        sistema = f"""Eres el asistente inteligente de SISTCO-ML con acceso a datos en tiempo real desde MySQL.
-SISTCO Sistemas y Comunicaciones SAS — proveedor de internet inalámbrico rural en Santander, Colombia.
-
-═══ DATOS EN TIEMPO REAL ═══
-- Total clientes: {bd['total']}
-- Ingreso mensual estimado: ${bd['ingreso_act']:,.0f} COP
-- Mensualidad promedio: ${bd['mens_prom']:,.0f} COP
-- Antigüedad promedio: {bd['antig_prom']} meses
-- Tasa de mora promedio: {bd['tasa_prom']}%
-- Clientes actualmente en mora: {bd['mora_ultimo_mes']}
-- Clientes con mora en últimos 3 meses: {bd['en_mora_rec']}
-- Riesgo Alto: {bd['alto']} | Medio: {bd['medio']} | Bajo: {bd['bajo']}
-- Clientes con servicio de $80,000 COP: {bd['total_80k']}
-- Clientes con más de un servicio: ninguno (la base de datos registra un servicio por cliente)
-
-═══ TOP 5 CLIENTES MAYOR RIESGO ═══
-{bd['top_riesgo']}
-
-═══ MUNICIPIOS — TOP 5 POR MORA ═══
-{bd['muni_mora']}
-
-═══ MUNICIPIOS — TOP 5 POR CLIENTES ═══
-{bd['muni_clientes']}
-
-═══ RIESGO ML POR MUNICIPIO ═══
-{bd['riesgo_municipio']}
-
-═══ DISTRIBUCIÓN DE MENSUALIDADES ═══
-{bd['dist_mensualidades']}
-
-═══ CLIENTES Y MORA POR MUNICIPIO ═══
-{bd['mora_municipio']}
-
-═══ DISTRIBUCIÓN POR PLAN DE MEGAS ═══
-{bd['dist_megas']}
-
-═══ TOP 10 CLIENTES MAYOR MENSUALIDAD ═══
-{bd['top_mensualidad']}
-
-═══ CLIENTES CORPORATIVOS — SEGMENTO K-MEANS ═══
-{bd['clientes_corporativos']}
-
-═══ CLIENTES POR VEREDA Y MUNICIPIO ═══
-{bd['clientes_vereda']}
-
-═══ PLANES POR VEREDA (incluye precio máximo por plan) ═══
-{bd['plan_por_vereda']}
-
-═══ CLIENTES AL DÍA POR VEREDA (con códigos) ═══
-{bd['clientes_al_dia_vereda']}
-
-═══ CORPORATIVOS POR VEREDA (con códigos y planes) ═══
-{bd['corporativos_vereda']}
-
-═══ RESUMEN POR VEREDA EN ORDEN ALFABÉTICO ═══
-{bd['resumen_alfabetico']}
-
-═══ TOP 5 CLIENTES MÁS ANTIGUOS (por fecha de instalación) ═══
-{bd['mas_antiguos']}
-
-═══ TOP 5 CLIENTES MÁS RECIENTES (por fecha de instalación) ═══
-{bd['mas_recientes']}
-
-═══ SEGMENTOS K-Means K=5 ═══
-{resumen_segs}
-
-═══ PROYECCIÓN INGRESOS PRÓXIMOS 6 MESES ═══
-{proy_texto}
-
-═══ MODELOS ML ═══
-1. Clasificación: Regresión Logística — AUC-ROC: {auc} — Recall: 93.75%
-2. Proyección de Ingresos: Regresión Lineal — MAPE: {mape}%
-3. Segmentación: K-Means K=5 — Silueta: {silueta}
-
-═══ INSTRUCCIONES CRÍTICAS ═══
-- Responde SIEMPRE en español, claro y profesional, máximo 3 párrafos
-- Los datos de arriba son el ESTADO EXACTO Y ACTUAL de la base de datos
-- NUNCA digas "no tengo información" si los datos están en el contexto — búscalos bien
-- Si la vereda está en los datos responde con datos exactos
-- Si la vereda no existe en los datos di que no hay clientes registrados en esa vereda
-- Para "plan más costoso en vereda X" busca en PLANES POR VEREDA el mens_max más alto de esa vereda
-- Para "clientes al día en vereda X" busca en CLIENTES AL DÍA POR VEREDA filtrando por esa vereda
-- Para "clientes con más de un servicio" responde que actualmente ningún cliente tiene más de un servicio
-- Para "clientes con $80,000" usa el dato de {bd['total_80k']} clientes
-- Para cliente más antiguo/reciente usa las secciones TOP 5 CLIENTES MÁS ANTIGUOS/RECIENTES
-- NUNCA uses datos de respuestas anteriores
-- Nunca menciones nombres de campos técnicos
-- Habla como asistente empresarial profesional"""
-
+        # Historial controlado — máximo 8 mensajes (4 intercambios)
         messages = [{"role": "system", "content": sistema}]
-
         if datos.historial:
-            for msg in datos.historial[-12:]:
+            for msg in datos.historial[-8:]:
                 messages.append({
                     "role":    "user" if msg.rol == "user" else "assistant",
                     "content": msg.contenido
                 })
 
-        pregunta_enriquecida = f"""{datos.pregunta}
-
-[CONTEXTO NUMÉRICO ACTUALIZADO - USA ESTOS VALORES EXACTOS]:
-- Clientes en mora: {bd['mora_ultimo_mes']}
-- Clientes con mora reciente: {bd['en_mora_rec']}
-- Total clientes: {bd['total']}
-- Riesgo Alto: {bd['alto']} | Medio: {bd['medio']} | Bajo: {bd['bajo']}
-- Clientes $80,000: {bd['total_80k']}"""
-
-        messages.append({"role": "user", "content": pregunta_enriquecida})
+        messages.append({"role": "user", "content": datos.pregunta})
 
         respuesta = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="llama-3.3-70b-versatile",
             messages=messages,
-            max_tokens=600,
+            max_tokens=500,
             temperature=0.1,
         )
 
-        texto = respuesta.choices[0].message.content
-
         return {
-            "respuesta": texto,
+            "respuesta": respuesta.choices[0].message.content,
             "fuente":    "Groq — LLaMA 3.3 70B",
             "datos_bd":  True
         }
