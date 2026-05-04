@@ -887,8 +887,11 @@ SISTCO Sistemas y Comunicaciones SAS — proveedor de internet inalámbrico rura
         }
 
     except Exception as e:
+        import traceback
+        print(f"ERROR ASISTENTE: {e}")
+        print(traceback.format_exc())
         return {
-            "respuesta": "El asistente no está disponible. Verifica que FastAPI esté corriendo y la API key de Groq sea correcta.",
+            "respuesta": f"Error: {str(e)}",
             "fuente":    "error",
             "datos_bd":  False
         }
