@@ -53,7 +53,7 @@ print("Cargando modelos...")
 modelo_clasificacion = joblib.load(os.path.join(BASE, 'modelos', 'modelo_mora.pkl'))
 modelo_segmentacion  = joblib.load(os.path.join(BASE, 'modelos', 'modelo_segmentacion.pkl'))
 modelo_ingresos      = joblib.load(os.path.join(BASE, 'modelos', 'modelo_ingresos.pkl'))
-print("✅ modelo_mora.pkl         — Clasificación de clientes")
+print("✅ modelo_mora.pkl             — Clasificación de clientes")
 print("✅ modelo_segmentacion.pkl — Segmentación de clientes")
 print("✅ modelo_ingresos.pkl     — Proyección de ingresos")
 print("🚀 API lista en http://localhost:8000")
@@ -296,13 +296,15 @@ def obtener_datos_bd():
                 for r in cursor.fetchall()
             ])
 
+            # ✅ CONSULTA MODIFICADA - Versión resumida (agregada por vereda y municipio)
             cursor.execute("""
-                SELECT codigo_cliente, COALESCE(vereda, 'Sin vereda') as vereda,
-                       municipio, megas, ROUND(mensualidad*1000,0) as mensualidad
-                FROM clientes WHERE es_moroso = 0 ORDER BY municipio, vereda
+                SELECT COALESCE(vereda, 'Sin vereda') as vereda, municipio,
+                       COUNT(*) as al_dia
+                FROM clientes WHERE es_moroso = 0
+                GROUP BY vereda, municipio ORDER BY municipio, vereda
             """)
             clientes_al_dia_vereda = '\n'.join([
-                f"  - Código {r['codigo_cliente']} ({r['vereda']}, {r['municipio']}): {r['megas']}, ${int(r['mensualidad']):,} COP"
+                f"  - {r['vereda']} ({r['municipio']}): {r['al_dia']} clientes al día"
                 for r in cursor.fetchall()
             ])
 
@@ -377,7 +379,7 @@ def obtener_datos_bd():
             "clientes_corporativos": clientes_corporativos,
             "clientes_vereda":        clientes_vereda,
             "plan_por_vereda":        plan_por_vereda,
-            "clientes_al_dia_vereda": clientes_al_dia_vereda,
+            "clientes_al_dia_vereda": clientes_al_dia_vereda,  # ✅ Versión resumida
             "corporativos_vereda":    corporativos_vereda,
             "resumen_alfabetico":     resumen_alfabetico,
             "mas_antiguos":           mas_antiguos,
@@ -810,7 +812,7 @@ SISTCO Sistemas y Comunicaciones SAS — proveedor de internet inalámbrico rura
 ═══ PLANES POR VEREDA (incluye precio máximo por plan) ═══
 {bd['plan_por_vereda']}
 
-═══ CLIENTES AL DÍA POR VEREDA ═══
+═══ CLIENTES AL DÍA POR VEREDA (resumen por vereda y municipio) ═══
 {bd['clientes_al_dia_vereda']}
 
 ═══ CORPORATIVOS POR VEREDA ═══
