@@ -878,7 +878,7 @@ SISTCO Sistemas y Comunicaciones SAS — proveedor de internet inalámbrico rura
         messages.append({"role": "user", "content": pregunta_enriquecida})
 
         respuesta = groq_client.chat.completions.create(
-            model="llama-3.3-70b-specdec",
+            model="llama-3.1-8b-instant",
             messages=messages,
             max_tokens=600,
             temperature=0.1,
