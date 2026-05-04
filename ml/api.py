@@ -438,7 +438,7 @@ def detectar_intenciones(pregunta: str) -> set:
     return intenciones
 
 # ── Constructor de system prompt dinámico ──
-def construir_system_prompt(intenciones: set, bd: dict, segmentos, auc: float, mape: float, silueta: float) -> str:
+def construir_system_prompt(intenciones: set, bd: dict, segmentos, auc: float, mape: float, silueta: float, pregunta: str = "") -> str:
 
     # Estimador simple de tokens (1 token ≈ 4 caracteres)
     def est_tokens(texto): return len(texto) // 4
@@ -468,11 +468,30 @@ def construir_system_prompt(intenciones: set, bd: dict, segmentos, auc: float, m
             return True
         return False
 
-    # BLOQUE UBICACION — veredas completas
+    # BLOQUE UBICACION — veredas con filtrado por pregunta
     if "UBICACION" in intenciones or "MUNICIPIO" in intenciones:
+        # Filtrar solo las veredas mencionadas en la pregunta
+        p_norm = pregunta.lower()
+        lineas_relevantes = []
+        for linea in bd['resumen_veredas'].split('\n'):
+            linea_norm = linea.lower()
+            # Incluir si alguna palabra de la línea aparece en la pregunta
+            palabras_linea = [w for w in linea_norm.split() if len(w) > 3]
+            if any(w in p_norm for w in palabras_linea):
+                lineas_relevantes.append(linea)
+        
+        # Si no encontró nada específico, mostrar todas pero resumidas
+        if not lineas_relevantes:
+            vereda_data = bd['resumen_veredas']
+        else:
+            vereda_data = '\n'.join(lineas_relevantes)
+        
         agregar(f"""
-═══ RESUMEN POR VEREDA (total, al día, en mora, corporativos, plan más costoso) ═══
-{bd['resumen_veredas']}""")
+═══ DATOS DE VEREDAS RELEVANTES ═══
+{vereda_data}
+
+═══ RESUMEN COMPLETO POR VEREDA ═══
+{bd['resumen_veredas'][:2000]}""")
 
     # BLOQUE MORA
     if "MORA" in intenciones:
@@ -856,7 +875,7 @@ def consulta_asistente(datos: PreguntaAsistente):
 
         # Detectar intenciones y construir prompt dinámico
         intenciones = detectar_intenciones(datos.pregunta)
-        sistema     = construir_system_prompt(intenciones, bd, segmentos, auc, mape, silueta)
+        sistema     = construir_system_prompt(intenciones, bd, segmentos, auc, mape, silueta, datos.pregunta)
 
         # Historial controlado — máximo 8 mensajes (4 intercambios)
         messages = [{"role": "system", "content": sistema}]
