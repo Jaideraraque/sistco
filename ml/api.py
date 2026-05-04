@@ -470,28 +470,35 @@ def construir_system_prompt(intenciones: set, bd: dict, segmentos, auc: float, m
 
     # BLOQUE UBICACION — veredas con filtrado por pregunta
     if "UBICACION" in intenciones or "MUNICIPIO" in intenciones:
-        # Filtrar solo las veredas mencionadas en la pregunta
         p_norm = pregunta.lower()
-        lineas_relevantes = []
-        for linea in bd['resumen_veredas'].split('\n'):
-            linea_norm = linea.lower()
-            # Incluir si alguna palabra de la línea aparece en la pregunta
-            palabras_linea = [w for w in linea_norm.split() if len(w) > 3]
-            if any(w in p_norm for w in palabras_linea):
-                lineas_relevantes.append(linea)
         
-        # Si no encontró nada específico, mostrar todas pero resumidas
-        if not lineas_relevantes:
-            vereda_data = bd['resumen_veredas']
+        # Si pregunta "todas las veredas" mostrar resumen compacto
+        if any(x in p_norm for x in ["todas", "cada vereda", "por vereda", "alfabético", "alfabetico", "todas las veredas", "lista de veredas"]):
+            agregar(f"""
+═══ RESUMEN POR VEREDA (orden alfabético) ═══
+{bd['resumen_veredas'][:3000]}""")
         else:
-            vereda_data = '\n'.join(lineas_relevantes)
-        
-        agregar(f"""
+            # Filtrar solo las veredas mencionadas en la pregunta
+            lineas_relevantes = []
+            for linea in bd['resumen_veredas'].split('\n'):
+                linea_norm = linea.lower()
+                # Incluir si alguna palabra de la línea aparece en la pregunta
+                palabras_linea = [w for w in linea_norm.split() if len(w) > 3]
+                if any(w in p_norm for w in palabras_linea):
+                    lineas_relevantes.append(linea)
+            
+            # Si no encontró nada específico, mostrar todas pero resumidas
+            if not lineas_relevantes:
+                vereda_data = bd['resumen_veredas'][:1000]
+            else:
+                vereda_data = '\n'.join(lineas_relevantes)
+            
+            agregar(f"""
 ═══ DATOS DE VEREDAS RELEVANTES ═══
 {vereda_data}
 
 ═══ RESUMEN COMPLETO POR VEREDA ═══
-{bd['resumen_veredas'][:2000]}""")
+{bd['resumen_veredas'][:1000]}""")
 
     # BLOQUE MORA
     if "MORA" in intenciones:
